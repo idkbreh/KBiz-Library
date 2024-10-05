@@ -1,0 +1,5 @@
+USERNAME=your_kbiz_username
+PASSWORD=your_kbiz_password
+BANK_ACCOUNT_NUMBER=your_account_that_connect_with_kbiz(no need to put "-" between number )
+
+//change this file to .env and remove this line 
