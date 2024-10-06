@@ -7,12 +7,15 @@ const formUrlEncoded = (obj: Record<string, any>): string =>
     .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
     .join("&");
 
-function getCookieByName(cookies: string[], name: string): string | null {
+const timeoutPromise = (ms: number) => 
+  new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout exceeded')), ms));
+
+const getCookieByName = (cookies: string[], name: string): string | null => {
   const cookie = cookies
     .map(cookie => cookie.split(";")[0].split("="))
     .find(([cookieName]) => cookieName.trim() === name);
   return cookie ? cookie[1] : null;
-}
+};
 
 class KBiz {
   private username: string;
@@ -22,10 +25,9 @@ class KBiz {
   private token?: string;
 
   constructor({ username, password, bankAccountNumber, ibId, token }: { username: string; password: string; bankAccountNumber: string; ibId?: string; token?: string }) {
-    // Check required fields
     [{ fieldName: 'username', value: username }, { fieldName: 'password', value: password }, { fieldName: 'bankAccountNumber', value: bankAccountNumber }]
       .forEach(({ fieldName, value }) => {
-        if (value == undefined || value.trim() === '') {
+        if (!value?.trim()) {
           throw new Error(`${fieldName} is required.`);
         }
       });
@@ -38,6 +40,14 @@ class KBiz {
 
     if (this.token) axios.defaults.headers.common["Authorization"] = this.token;
     if (this.ibId) axios.defaults.headers.common["X-IB-ID"] = this.ibId;
+  }
+
+  resetSession() {
+    this.ibId = undefined;
+    this.token = undefined;
+    delete axios.defaults.headers.common["Authorization"];
+    delete axios.defaults.headers.common["X-IB-ID"];
+    delete axios.defaults.headers.common["Cookie"];
   }
 
   async login() {
@@ -53,23 +63,22 @@ class KBiz {
         { headers: { 'Cookie': `AlteonP=${alteonP}; JSESSIONID=${jSessionId}` } }
       );
 
-      if (loginResponse.headers['set-cookie'] == undefined) throw new Error("Can't find set-cookie in response headers. Please re-check your username and password.");
+      if (!loginResponse.headers['set-cookie']) throw new Error("Can't find set-cookie in response headers.");
 
       const rssoJSessionId = getCookieByName(loginResponse.headers['set-cookie'], 'JSESSIONID');
       const { data } = await axios.get('/authen/ib/redirectToIB.jsp', { headers: { Cookie: `AlteonP=${alteonP}; JSESSIONID=${rssoJSessionId};` } });
       const rsso = this.extractBetween(data, `dataRsso=`, `";`);
       const result = await axios.post("/services/api/authentication/validateSession", { dataRsso: rsso });
-      
+
       this.ibId = result.data.data.userProfiles[0].ibId;
       this.token = result.headers["x-session-token"];
-
       axios.defaults.headers.common["Authorization"] = this.token;
       axios.defaults.headers.common["X-IB-ID"] = this.ibId;
       axios.defaults.headers.common["Cookie"] = `AlteonP=${alteonP};`;
 
       return { success: true, ibId: this.ibId, token: this.token };
     } catch (error) {
-      console.error(error);
+      console.error('Login failed:', error);
       return { success: false };
     }
   }
@@ -78,58 +87,115 @@ class KBiz {
     try {
       await axios.post("/services/api/refreshSession", {});
       return true;
-    } catch {
-      return this.checkSession(); // Retry on failure
+    } catch (error) {
+      console.error("UnAuthorized Please wait !");
+      return false;
     }
   }
 
- async getTransactionList(limitRow = 7, startDate = null, endDate = null) {
-  const today = new Date();
-  const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-  const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-
-  const formattedStartDate = `${String(firstDayOfMonth.getDate()).padStart(2, "0")}/${String(firstDayOfMonth.getMonth() + 1).padStart(2, "0")}/${firstDayOfMonth.getFullYear()}`;
-  const formattedEndDate = `${String(lastDayOfMonth.getDate()).padStart(2, "0")}/${String(lastDayOfMonth.getMonth() + 1).padStart(2, "0")}/${lastDayOfMonth.getFullYear()}`;
-
-  try {
-    const response = await axios.post(
-      "/services/api/accountsummary/getRecentTransactionList",
-      {
-        acctNo: this.bankAccountNumber,
-        acctType: "SA",
-        custType: "IX",
-        endDate: endDate || formattedEndDate,
-        ownerId: this.ibId,
-        ownerType: "Company",
-        pageNo: "1",
-        rowPerPage: limitRow,
-        startDate: startDate || formattedStartDate,
-      },
-      {
-        headers: {
-          'Referer': 'https://kbiz.kasikornbank.com/menu/account/account/recent-transaction',
-          'Content-Type': 'application/json',
-          'Authorization': this.token,
-          'X-SESSION-IBID': this.ibId,
-          'X-IB-ID': this.ibId,
-          'X-VERIFY': 'Y',
-          'X-RE-FRESH': 'N',
+  async initializeSession() {
+    if (this.token && this.ibId) {
+      try {
+        console.log("Checking session...");
+        const sessionIsAlive = await Promise.race([
+          this.checkSession(),
+          timeoutPromise(10000)
+        ]);
+  
+        if (sessionIsAlive) {
+          console.log("Session is alive.");
+          return await this.getUserInfo();
+        } else {
+          console.log("Session expired. Re-logging in...");
+          this.resetSession();
+          const loginData = await this.login();
+          if (!loginData.success) {
+            return { success: false, message: "Re-login failed after session expired." };
+          }
+          return await this.getUserInfo();
         }
+      } catch (error) {
+        if (error.message === 'Timeout exceeded') {
+          console.log("Timeout occurred. Retrying login...");
+          this.resetSession();
+          const loginData = await this.login();
+          if (!loginData.success) {
+            return { success: false, message: "Session timed out, and re-login failed." };
+          }
+          return await this.getUserInfo();
+        }
+        // console.error("err msg : ", error);
+        return { success: false, message: "An error occurred during session initialization." };
       }
-    );
-
-    const { data: { data: { recentTransactionList } } } = response;
-    return recentTransactionList;
-
-  } catch (error) {
-    if (error.response?.status == 401) {
-      return error;
     }
-    return [];
-  }
-}
 
-  async getRecentTransactionDetail(transDate, origRqUid, originalSourceId, debitCreditIndicator, transCode, transType) {
+    const loginData = await this.login();
+    if (!loginData.success) {
+      console.log('Login failed.');
+      return { success: false, message: 'Login failed.' };
+    }
+  
+    return await this.getUserInfo();
+  }
+  
+
+  async getTransactionList(limitRow = 7, startDate: string | null = null, endDate: string | null = null) {
+    const today = new Date();
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+
+    const formattedStartDate = startDate || `${firstDayOfMonth.getDate().toString().padStart(2, '0')}/${(firstDayOfMonth.getMonth() + 1).toString().padStart(2, '0')}/${firstDayOfMonth.getFullYear()}`;
+    const formattedEndDate = endDate || `${lastDayOfMonth.getDate().toString().padStart(2, '0')}/${(lastDayOfMonth.getMonth() + 1).toString().padStart(2, '0')}/${lastDayOfMonth.getFullYear()}`;
+
+    try {
+      const response = await axios.post(
+        "/services/api/accountsummary/getRecentTransactionList",
+        {
+          acctNo: this.bankAccountNumber,
+          acctType: "SA",
+          custType: "IX",
+          endDate: formattedEndDate,
+          ownerId: this.ibId,
+          ownerType: "Company",
+          pageNo: "1",
+          rowPerPage: limitRow,
+          startDate: formattedStartDate
+        },
+        {
+          headers: {
+            'Referer': 'https://kbiz.kasikornbank.com/menu/account/account/recent-transaction',
+            'Content-Type': 'application/json',
+            'Authorization': this.token,
+            'X-SESSION-IBID': this.ibId,
+            'X-IB-ID': this.ibId,
+            'X-VERIFY': 'Y',
+            'X-RE-FRESH': 'N',
+          }
+        }
+      );
+
+      const { data: { data: { recentTransactionList } } } = response;
+      const transactionDetails = await Promise.all(recentTransactionList.map(async (transaction) => {
+        const detail = await this.getRecentTransactionDetail(
+          transaction.transDate, transaction.origRqUid, transaction.originalSourceId, 
+          transaction.debitCreditIndicator, transaction.transCode, transaction.transType
+        );
+        return { ...transaction, detail: detail.data };
+      }));
+
+      return transactionDetails;
+    } catch (error) {
+      if (error.response?.status === 401) {
+        this.resetSession();
+        await this.login();
+        return await this.getTransactionList(limitRow, startDate, endDate);
+      }
+      // console.error('err msg : ', error);
+      return [];
+    }
+  }
+
+  async getRecentTransactionDetail(transDate: string, origRqUid: string, originalSourceId: string, debitCreditIndicator: string, transCode: string, transType: string) {
     try {
       const { data } = await axios.post("/services/api/accountsummary/getRecentTransactionDetail", {
         transDate: transDate.split(" ")[0],
@@ -146,36 +212,16 @@ class KBiz {
 
       return data;
     } catch (error) {
-      if (!error.response) console.log(error);
-      if (error.response?.status === 401) return this.getRecentTransactionDetail(transDate, origRqUid, originalSourceId, debitCreditIndicator, transCode, transType);
-
-      console.error(error.response);
-      return null;
-    }
-  }
-  async initializeSession() {
-    if (this.token && this.ibId) {
-      const sessionIsAlive = await this.checkSession();
-      if (sessionIsAlive) {
-        return await this.getUserInfo();
+      if (error.response?.status === 401) {
+        this.resetSession();
+        await this.login();
+        return await this.getRecentTransactionDetail(transDate, origRqUid, originalSourceId, debitCreditIndicator, transCode, transType);
       }
-    }
-  
-    const loginData = await this.login();
-    if (!loginData.success) {
-      console.log('Login failed.');
+      console.error('Error fetching transaction detail:', error);
       return null;
     }
-  
-    const userInfo = await this.getUserInfo();
-    if (userInfo == null) {
-      console.log('Failed to get user info.');
-      return null;
-    }
-  
-    return userInfo;
   }
-  
+
   async getUserInfo() {
     try {
       const { data: { data } } = await axios.post("/services/api/accountsummary/getAccountSummaryList", {
@@ -189,10 +235,12 @@ class KBiz {
       });
       return data;
     } catch (error) {
-      if (!error.response) console.log(error);
-      if (error.response?.status === 401) return this.getUserInfo();
-
-      console.error(error.response);
+      if (error.response?.status === 401) {
+        this.resetSession();
+        await this.login();
+        return await this.getUserInfo();
+      }
+      // console.error('err msg : ', error);
       return null;
     }
   }

@@ -13,9 +13,8 @@ export class KBizController {
     if (!userInfo) {
       return { success: false, message: 'Account error !' };
     }
-
     const transactionList = await this.kBizService.getTransactionList(amountTransaction);
-    console.log(transactionList)
+
     return { success: true, transactions: transactionList };
   }
 
