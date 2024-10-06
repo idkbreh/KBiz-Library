@@ -83,47 +83,51 @@ class KBiz {
     }
   }
 
-  async getTransactionList(limitRow = 7, startDate = null, endDate = null) {
-    const today = new Date();
-    const formattedDate = `${String(today.getDate()).padStart(2, "0")}/${String(today.getMonth() + 1).padStart(2, "0")}/${today.getFullYear()}`;
-    
-    try {
-      const response = await axios.post(
-        "/services/api/accountsummary/getRecentTransactionList",
-        {
-          acctNo: this.bankAccountNumber,
-          acctType: "SA",
-          custType: "IX",
-          endDate: endDate || formattedDate,
-          ownerId: this.ibId,
-          ownerType: "Company",
-          pageNo: "1",
-          rowPerPage: limitRow,
-          startDate: startDate || formattedDate,
-        },
-        {
-          headers: {
-            'Referer': 'https://kbiz.kasikornbank.com/menu/account/account/recent-transaction',
-            'Content-Type': 'application/json',
-            'Authorization': this.token,
-            'X-SESSION-IBID': this.ibId,
-            'X-IB-ID': this.ibId,
-            'X-VERIFY': 'Y',
-            'X-RE-FRESH': 'N',
-          }
+ async getTransactionList(limitRow = 7, startDate = null, endDate = null) {
+  const today = new Date();
+  const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+
+  const formattedStartDate = `${String(firstDayOfMonth.getDate()).padStart(2, "0")}/${String(firstDayOfMonth.getMonth() + 1).padStart(2, "0")}/${firstDayOfMonth.getFullYear()}`;
+  const formattedEndDate = `${String(lastDayOfMonth.getDate()).padStart(2, "0")}/${String(lastDayOfMonth.getMonth() + 1).padStart(2, "0")}/${lastDayOfMonth.getFullYear()}`;
+
+  try {
+    const response = await axios.post(
+      "/services/api/accountsummary/getRecentTransactionList",
+      {
+        acctNo: this.bankAccountNumber,
+        acctType: "SA",
+        custType: "IX",
+        endDate: endDate || formattedEndDate,
+        ownerId: this.ibId,
+        ownerType: "Company",
+        pageNo: "1",
+        rowPerPage: limitRow,
+        startDate: startDate || formattedStartDate,
+      },
+      {
+        headers: {
+          'Referer': 'https://kbiz.kasikornbank.com/menu/account/account/recent-transaction',
+          'Content-Type': 'application/json',
+          'Authorization': this.token,
+          'X-SESSION-IBID': this.ibId,
+          'X-IB-ID': this.ibId,
+          'X-VERIFY': 'Y',
+          'X-RE-FRESH': 'N',
         }
-      );
-
-      const { data: { data: { recentTransactionList } } } = response;
-      return recentTransactionList;
-
-    } catch (error) {
-      if(error.response?.status == 401){
-        return error
       }
-      return [];
+    );
+
+    const { data: { data: { recentTransactionList } } } = response;
+    return recentTransactionList;
+
+  } catch (error) {
+    if (error.response?.status == 401) {
+      return error;
     }
+    return [];
   }
+}
 
   async getRecentTransactionDetail(transDate, origRqUid, originalSourceId, debitCreditIndicator, transCode, transType) {
     try {
@@ -150,26 +154,28 @@ class KBiz {
     }
   }
   async initializeSession() {
+    if (this.token && this.ibId) {
+      const sessionIsAlive = await this.checkSession();
+      if (sessionIsAlive) {
+        return await this.getUserInfo();
+      }
+    }
+  
     const loginData = await this.login();
     if (!loginData.success) {
       console.log('Login failed.');
       return null;
     }
-
-    const sessionIsAlive = await this.checkSession();
-    if (!sessionIsAlive) {
-      console.log('Session is dead.');
-      return null;
-    }
-
+  
     const userInfo = await this.getUserInfo();
     if (userInfo == null) {
       console.log('Failed to get user info.');
       return null;
     }
-
+  
     return userInfo;
   }
+  
   async getUserInfo() {
     try {
       const { data: { data } } = await axios.post("/services/api/accountsummary/getAccountSummaryList", {

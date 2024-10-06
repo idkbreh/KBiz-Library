@@ -19,6 +19,11 @@ export class KbizService {
     return await this.kBizClient.initializeSession();
   }
 
+  async getBalance(){
+    const userInfo = await this.kBizClient.initializeSession()
+    return userInfo
+  }
+
   async getTransactionList(limitRow: number) {
     return await this.kBizClient.getTransactionList(limitRow);
   }
